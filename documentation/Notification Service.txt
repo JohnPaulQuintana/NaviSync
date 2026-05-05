@@ -1,0 +1,329 @@
+NaviSync Notification Sync System Documentation
+
+---
+
+OVERVIEW
+
+The system captures Android notifications, stores them locally in SQLite, and syncs them to a backend server (Node + Supabase). It is designed as an offline-first pipeline with batching and retry behavior.
+
+Flow:
+
+Android Notification
+→ NotificationListenerService
+→ SQLite (local queue)
+→ Batch Scheduler (3-second delay)
+→ SyncManager
+→ Node API (/notification/captured)
+→ Supabase Database
+
+---
+
+1. NOTIFICATION CAPTURE LAYER
+
+Class: NotificationListener
+
+Extends:
+NotificationListenerService
+
+Responsibilities:
+
+* Listens to real-time notifications
+* Extracts relevant data
+* Stores notifications locally
+* Triggers sync process
+
+Extracted Data:
+
+* title
+* text
+* packageName
+* postTime
+
+Example:
+
+val title = extras.getString("android.title") ?: "No Title"
+val text = extras.getCharSequence("android.text")?.toString() ?: ""
+val packageName = sbn.packageName
+val postTime = sbn.postTime
+
+---
+
+UNIQUE IDENTIFIER (clientId)
+
+Generated as:
+
+val clientId = "$packageName-$postTime-$title"
+
+Purpose:
+
+* Prevent duplicate records
+* Ensure idempotent syncing
+* Serve as unique reference across system
+
+---
+
+LOCAL SAVE
+
+db.insert(clientId, packageName, title, text, postTime)
+
+After saving:
+SyncManager.requestSync(this)
+
+---
+
+2. LOCAL STORAGE (SQLITE)
+
+Class: NotificationDbHelper
+
+Database: navisync.db
+
+Table: notifications
+
+Schema:
+
+id INTEGER PRIMARY KEY AUTOINCREMENT
+clientId TEXT UNIQUE
+packageName TEXT
+title TEXT
+text TEXT
+postTime INTEGER
+isSynced INTEGER DEFAULT 0
+
+---
+
+KEY DESIGN
+
+clientId UNIQUE
+
+* Prevents duplicate inserts
+
+isSynced
+
+* Acts as queue flag
+* 0 = pending
+* 1 = synced
+
+---
+
+INSERT STRATEGY
+
+insertWithOnConflict(CONFLICT_IGNORE)
+
+Behavior:
+
+* Duplicate records are ignored silently
+
+---
+
+FETCH UNSYNCED
+
+SELECT * FROM notifications WHERE isSynced = 0
+
+---
+
+MARK AS SYNCED
+
+markSynced(clientId)
+
+Updates:
+isSynced = 1
+
+---
+
+3. SYNC ENGINE (SyncManager)
+
+Purpose:
+
+* Batch notifications
+* Send to server
+* Prevent duplicate sync execution
+* Handle retries indirectly
+
+---
+
+KEY VARIABLES
+
+@Volatile private var isSyncing = false
+@Volatile private var syncScheduled = false
+
+isSyncing:
+
+* Prevents multiple sync threads running
+
+syncScheduled:
+
+* Prevents multiple rapid triggers
+* Enables batching
+
+---
+
+REQUEST SYNC (BATCHING)
+
+Function: requestSync(context)
+
+Logic:
+
+if (syncScheduled) return
+
+syncScheduled = true
+
+Thread:
+sleep 3000 ms
+call sync()
+set syncScheduled = false
+
+Behavior:
+
+* Groups multiple notifications within 3 seconds
+* Reduces API calls
+
+---
+
+SYNC PROCESS
+
+Function: sync(context)
+
+Steps:
+
+1. Prevent duplicate execution:
+   if (isSyncing) return
+
+2. Set syncing flag:
+   isSyncing = true
+
+3. Fetch unsynced notifications
+
+4. Loop through each record
+
+5. Send to server
+
+6. If success:
+   mark as synced
+
+7. If failure:
+   leave as unsynced (retry later)
+
+8. Reset syncing flag
+
+---
+
+NETWORK REQUEST
+
+Function: sendToServer(...)
+
+Payload:
+
+{
+"clientId": "...",
+"appPackage": "...",
+"title": "...",
+"text": "...",
+"time": 123456789
+}
+
+Behavior:
+
+* Uses OkHttp synchronous request
+* Returns true if HTTP success
+* Returns false on failure
+
+---
+
+RETRY BEHAVIOR
+
+There is no explicit retry loop.
+
+Instead:
+
+* Failed records remain isSynced = 0
+* They are retried automatically on next sync trigger
+
+Triggers:
+
+* New notification arrives
+* App restarts
+* Manual sync (future)
+
+---
+
+4. BACKEND (NODE + SUPABASE)
+
+Endpoint:
+
+POST /notification/captured
+
+---
+
+CLASSIFICATION LOGIC
+
+Function: classifyNotification()
+
+Categories:
+
+* Spam
+* Receipt
+* Job
+* Social (default)
+
+Based on keyword matching in:
+
+* title
+* text
+* app name
+
+---
+
+DATA STORED IN SUPABASE
+
+Fields:
+
+* app
+* title
+* preview
+* category
+* timestamp
+
+---
+
+SYSTEM CHARACTERISTICS
+
+Strengths:
+
+* Offline-first design
+* Duplicate-safe (clientId)
+* Batched network calls
+* Automatic retry via unsynced queue
+* Lightweight backend classification
+
+---
+
+CURRENT LIMITATIONS
+
+* No exponential backoff for retries
+* No priority queue (all notifications treated equally)
+* Sync is thread-based (not WorkManager)
+* No network state awareness (always attempts send)
+* No server response validation beyond HTTP success
+
+---
+
+UPDATES ON SYNC USING WORKMANAGER
+Before
+Manual threads
+Risk of lost sync when app dies
+No real retry system
+---
+After
+Guaranteed background execution
+Automatic retry with exponential backoff
+Runs only when network is available
+Survives app kill + device restart
+No duplicate sync jobs (KEEP policy)
+---
+Important Behavior Change
+Your old system:
+Sync triggered instantly
+---
+New system:
+Sync is scheduled by OS
+May delay slightly (few seconds to minutes depending on system state)
