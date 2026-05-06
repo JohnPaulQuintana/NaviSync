@@ -1,9 +1,10 @@
-import { Redirect } from "expo-router";
 import { UserStorage } from "@/src/storage/user.storage";
+import { Redirect } from "expo-router";
 import { useEffect, useState } from "react";
 
 export default function Index() {
   const [loggedIn, setLoggedIn] = useState<boolean | null>(null);
+
 
   useEffect(() => {
     (async () => {

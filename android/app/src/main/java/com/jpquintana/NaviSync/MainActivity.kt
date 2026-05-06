@@ -1,4 +1,8 @@
 package com.jpquintana.NaviSync
+
+import android.content.Intent
+import android.util.Log
+
 import expo.modules.splashscreen.SplashScreenManager
 
 import android.os.Build
@@ -11,6 +15,11 @@ import com.facebook.react.defaults.DefaultReactActivityDelegate
 
 import expo.modules.ReactActivityDelegateWrapper
 
+// 
+import com.jpquintana.NaviSync.local.NotificationDbHelper
+import com.jpquintana.NaviSync.local.NaviSyncPrefs
+import com.jpquintana.NaviSync.work.ShareSyncScheduler
+
 class MainActivity : ReactActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     // Set the theme to AppTheme BEFORE onCreate to support
@@ -21,6 +30,20 @@ class MainActivity : ReactActivity() {
     SplashScreenManager.registerOnActivity(this)
     // @generated end expo-splashscreen
     super.onCreate(null)
+    ShareSyncScheduler.start(this) // ONLY HERE
+    handleSharedIntent(intent)
+    // ShareSyncScheduler.triggerOnce(this) // optional but recommended
+  }
+
+override fun onNewIntent(intent: Intent) {
+    super.onNewIntent(intent)
+    setIntent(intent)
+
+    // ShareSyncScheduler.start(this) // 
+    handleSharedIntent(intent)
+
+    ShareSyncScheduler.triggerOnce(this) //
+
   }
 
   /**
@@ -61,5 +84,67 @@ class MainActivity : ReactActivity() {
       // Use the default back button implementation on Android S
       // because it's doing more than [Activity.moveTaskToBack] in fact.
       super.invokeDefaultOnBackPressed()
+  }
+
+
+  // =========================
+  // SHARE HANDLER (ONLY THIS)
+  // =========================
+    private fun handleSharedIntent(intent: Intent?) {
+
+      when (intent?.action) {
+
+          Intent.ACTION_SEND -> {
+              intent.getStringExtra(Intent.EXTRA_TEXT)
+                  ?.let { saveShare(it) }
+          }
+
+          Intent.ACTION_SEND_MULTIPLE -> {
+              intent.clipData?.let { clip ->
+                  for (i in 0 until clip.itemCount) {
+
+                      val text = clip.getItemAt(i).text?.toString()
+                          ?: clip.getItemAt(i).coerceToText(this)?.toString()
+
+                      text?.let { saveShare(it) }
+                  }
+              }
+          }
+      }
+
+      intent?.action = null
+  }
+
+fun cleanText(input: String): String {
+    return input
+        .replace(Regex("(?i)\\bmenu\\b"), "")
+        .replace(Regex("\\n{3,}"), "\n\n")
+        .trim()
+}
+
+  // =========================
+  // SQLITE SAVE
+  // =========================
+    private fun saveShare(text: String) {
+
+      val db = NotificationDbHelper(this)
+
+      val userId = NaviSyncPrefs.getUserId(this)
+      val deviceId = NaviSyncPrefs.getDeviceId(this)
+
+      val clientId = java.util.UUID.randomUUID().toString()
+
+      val cleanText = cleanText(text)
+
+      db.insertShare(
+          clientId = clientId,
+          text = cleanText,
+          source = "android_share",
+          userId = userId,
+          deviceId = deviceId,
+          postTime = System.currentTimeMillis()
+      )
+
+      Log.d("SYNC_WORKER", "SAVED CLEAN: $cleanText")
   }
 }

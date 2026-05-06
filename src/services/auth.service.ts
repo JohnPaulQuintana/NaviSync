@@ -6,7 +6,7 @@ export const authService = {
   // =====================
   login: async (email: string) => {
     const res = await api.post("/auth/login", { email });
-    console.log(res);
+    // console.log(res);
     return res;
   },
 

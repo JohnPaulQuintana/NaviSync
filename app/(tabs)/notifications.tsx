@@ -343,6 +343,8 @@ export default function NotificationsScreen() {
             <SkeletonCard />
             <SkeletonCard />
             <SkeletonCard />
+            <SkeletonCard />
+            <SkeletonCard />
           </>
         ) : notifications.length === 0 ? (
           <View className="items-center mt-20">
